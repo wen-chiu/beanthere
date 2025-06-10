@@ -1,0 +1,109 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: beanthere_postgres
+    environment:
+      POSTGRES_DB: beanthere_dev
+      POSTGRES_USER: beanthere
+      POSTGRES_PASSWORD: dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - beanthere_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: beanthere_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - beanthere_network
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: beanthere_api
+    environment:
+      - DATABASE_URL=postgresql://beanthere:dev_password@postgres:5432/beanthere_dev
+      - REDIS_URL=redis://redis:6379
+      - LINE_CHANNEL_SECRET=${LINE_CHANNEL_SECRET}
+      - LINE_CHANNEL_ACCESS_TOKEN=${LINE_CHANNEL_ACCESS_TOKEN}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./uploads:/app/uploads
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - beanthere_network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  linebot:
+    build:
+      context: ./frontend/line-bot
+      dockerfile: Dockerfile.dev
+    container_name: beanthere_linebot
+    environment:
+      - API_BASE_URL=http://api:8000
+      - LINE_CHANNEL_SECRET=${LINE_CHANNEL_SECRET}
+      - LINE_CHANNEL_ACCESS_TOKEN=${LINE_CHANNEL_ACCESS_TOKEN}
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./frontend/line-bot:/app
+    depends_on:
+      - api
+    networks:
+      - beanthere_network
+    command: python app.py
+
+  webapp:
+    build:
+      context: ./frontend/web-app
+      dockerfile: Dockerfile.dev
+    container_name: beanthere_webapp
+    environment:
+      - VUE_APP_API_BASE_URL=http://localhost:8000
+      - VUE_APP_LIFF_ID=${LIFF_ID}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/web-app:/app
+      - /app/node_modules
+    networks:
+      - beanthere_network
+    command: npm run serve
+
+  nginx:
+    image: nginx:alpine
+    container_name: beanthere_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deployment/nginx/dev.conf:/etc/nginx/nginx.conf
+      - ./ssl:/etc/nginx/ssl
+    depends_on:
+      - api
+      - linebot
+      - webapp
+    networks:
+      - beanthere_network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  beanthere_network:
+    driver: bridge

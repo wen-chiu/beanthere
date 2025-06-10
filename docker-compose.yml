@@ -1,0 +1,138 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  # PostgreSQL 資料庫
+  postgres:
+    image: postgres:15
+    container_name: beanthere_postgres
+    environment:
+      POSTGRES_DB: beanthere_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/02-schema.sql
+    networks:
+      - beanthere_network
+    restart: unless-stopped
+
+  # Redis (用於快取和會話)
+  redis:
+    image: redis:7-alpine
+    container_name: beanthere_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - beanthere_network
+    restart: unless-stopped
+
+  # 後端 API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: beanthere_backend
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/beanthere_db
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=True
+      - LINE_CHANNEL_SECRET=${LINE_CHANNEL_SECRET}
+      - LINE_CHANNEL_ACCESS_TOKEN=${LINE_CHANNEL_ACCESS_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_VISION_API_KEY=${GOOGLE_VISION_API_KEY}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./uploads:/app/uploads
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - beanthere_network
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # OCR 服務
+  ocr-service:
+    build:
+      context: ./services/ocr-service
+      dockerfile: Dockerfile
+    container_name: beanthere_ocr
+    environment:
+      - GOOGLE_VISION_API_KEY=${GOOGLE_VISION_API_KEY}
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./services/ocr-service:/app
+      - ./uploads:/app/uploads
+    networks:
+      - beanthere_network
+    restart: unless-stopped
+
+  # AI 服務
+  ai-service:
+    build:
+      context: ./services/ai-service
+      dockerfile: Dockerfile
+    container_name: beanthere_ai
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./services/ai-service:/app
+    networks:
+      - beanthere_network
+    restart: unless-stopped
+
+  # 前端 Web App (開發模式)
+  frontend:
+    build:
+      context: ./frontend/web-app
+      dockerfile: Dockerfile.dev
+    container_name: beanthere_frontend
+    environment:
+      - VUE_APP_API_BASE_URL=http://localhost:8000
+      - VUE_APP_LIFF_ID=${VUE_APP_LIFF_ID}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./frontend/web-app:/app
+      - /app/node_modules
+    networks:
+      - beanthere_network
+    restart: unless-stopped
+
+  # Nginx 反向代理
+  nginx:
+    image: nginx:alpine
+    container_name: beanthere_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deployment/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./deployment/nginx/default.conf:/etc/nginx/conf.d/default.conf
+      - ./uploads:/var/www/uploads
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - beanthere_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  beanthere_network:
+    driver: bridge
